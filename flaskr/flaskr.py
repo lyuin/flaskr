@@ -1,109 +1,121 @@
-import os
-import sqlite3
-from flask import Flask, request, session, g, redirect, url_for, abort, \
-    render_template, flash
+"""
+Main module for the Flaskr application.
+"""
+import functools
+from werkzeug.security import check_password_hash, generate_password_hash
+from flask import (
+    Blueprint, flash, g, redirect, render_template, request, session, url_for, abort,
+    current_app
+)
 
-app = Flask(__name__)  # create the application instance :)
-app.config.from_object(__name__)  # load config from this file , flaskr.py
+from .db import get_db
 
-# Load default config and override config from an environment variable
-# TODO use for db path http://flask.pocoo.org/docs/0.12/config/#instance-folders
-app.config.update(dict(
-    DATABASE=os.path.join(app.root_path, 'flaskr.db'),
-    SECRET_KEY='development key',
-    USERNAME='admin',
-    PASSWORD='default'
-))
-
-# FLASKR_SETTINGS points to a config file
-app.config.from_envvar('FLASKR_SETTINGS', silent=True)
+# Create a blueprint
+bp = Blueprint('flaskr', __name__)
 
 
-def init_db():
-    db = get_db()
-    with app.open_resource('schema.sql', mode='r') as f:
-        db.cursor().executescript(f.read())
-    db.commit()
-
-
-@app.cli.command('init_db')
-def initdb_command():
-    """Initializes the database."""
-    init_db()
-    print('Initialized the database.')
-
-
-def connect_db():
-    """Connects to the specific database."""
-    rv = sqlite3.connect(app.config['DATABASE'])
-    rv.row_factory = sqlite3.Row
-    return rv
-
-
-def get_db():
-    """Opens a new database connection if there is none yet for the
-    current application context.
-    """
-    if not hasattr(g, 'sqlite_db'):
-        g.sqlite_db = connect_db()
-    return g.sqlite_db
-
-
-@app.teardown_appcontext
-def close_db(error):
-    """Closes the database again at the end of the request."""
-    if hasattr(g, 'sqlite_db'):
-        g.sqlite_db.close()
-
-
-@app.route('/')
+@bp.route('/')
 def show_entries():
+    """Show all entries in the database."""
     db = get_db()
-    cur = db.execute('SELECT id, title, text FROM entries ORDER BY id DESC')
-    entries = cur.fetchall()
+    try:
+        cur = db.execute('SELECT id, title, text FROM entries ORDER BY id DESC')
+        entries = cur.fetchall()
+    except Exception as e:
+        flash(f'Error retrieving entries: {e}')
+        entries = []
     return render_template('show_entries.html', entries=entries)
 
 
-@app.route('/add', methods=['POST'])
+@bp.route('/add', methods=['POST'])
 def add_entry():
+    """Add a new entry to the database."""
     if not session.get('logged_in'):
         abort(401)
+    
+    title = request.form['title']
+    text = request.form['text']
+    
+    # Simple form validation
+    error = None
+    if not title:
+        error = 'Title is required.'
+    elif not text:
+        error = 'Text is required.'
+    
+    if error is not None:
+        flash(error)
+        return redirect(url_for('flaskr.show_entries'))
+    
     db = get_db()
-    db.execute('INSERT INTO entries (title, text) VALUES (?, ?)',
-               [request.form['title'], request.form['text']])
-    db.commit()
-    flash('New entry was successfully posted')
-    return redirect(url_for('show_entries'))
+    try:
+        db.execute(
+            'INSERT INTO entries (title, text) VALUES (?, ?)',
+            (title, text)
+        )
+        db.commit()
+        flash('New entry was successfully posted')
+    except Exception as e:
+        db.rollback()
+        flash(f'Error adding entry: {e}')
+    
+    return redirect(url_for('flaskr.show_entries'))
 
 
-@app.route('/login', methods=['GET', 'POST'])
+@bp.route('/login', methods=['GET', 'POST'])
 def login():
+    """Log in a user."""
     error = None
     if request.method == 'POST':
-        if request.form['username'] != app.config['USERNAME']:
+        username = request.form['username']
+        password = request.form['password']
+        
+        # Simple form validation
+        if not username:
+            error = 'Username is required.'
+        elif not password:
+            error = 'Password is required.'
+        elif username != current_app.config['USERNAME']:
             error = 'Invalid username'
-        elif request.form['password'] != app.config['PASSWORD']:
+        elif password != current_app.config['PASSWORD']:
             error = 'Invalid password'
         else:
+            session.clear()
             session['logged_in'] = True
             flash('You were logged in')
-            return redirect(url_for('show_entries'))
+            return redirect(url_for('flaskr.show_entries'))
+    
     return render_template('login.html', error=error)
 
 
-@app.route('/delete/<int:entry_id>', methods=['POST'])
+@bp.route('/delete/<int:entry_id>', methods=['POST'])
 def delete_entry(entry_id):
+    """Delete an entry from the database."""
     if not session.get('logged_in'):
         abort(401)
+    
     db = get_db()
-    db.execute('DELETE FROM entries WHERE id = ?', [entry_id])
-    db.commit()
-    flash('Entry was successfully deleted')
-    return redirect(url_for('show_entries'))
+    try:
+        db.execute('DELETE FROM entries WHERE id = ?', (entry_id,))
+        db.commit()
+        flash('Entry was successfully deleted')
+    except Exception as e:
+        db.rollback()
+        flash(f'Error deleting entry: {e}')
+    
+    return redirect(url_for('flaskr.show_entries'))
 
 
-@app.route('/logout')
+@bp.route('/logout')
 def logout():
+    """Log out a user."""
     session.pop('logged_in', None)
     flash('You were logged out')
-    return redirect(url_for('show_entries'))
+    return redirect(url_for('flaskr.show_entries'))
+
+
+# For backwards compatibility
+def init_db():
+    """Initialize the database."""
+    from .db import init_db as _init_db
+    _init_db()

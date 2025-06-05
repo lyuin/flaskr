@@ -1,31 +1,44 @@
 import os
 import tempfile
 import pytest
-from flaskr import app, init_db
+from flaskr import create_app
+from flaskr.db import init_db
 
 
 @pytest.fixture
-def client():
-    """Create a test client for the app."""
-    db_fd, app.config['DATABASE'] = tempfile.mkstemp()
-    app.config['TESTING'] = True
-    app.config['WTF_CSRF_ENABLED'] = False
-    app.config['USERNAME'] = 'admin'
-    app.config['PASSWORD'] = 'default'
-
-    with app.test_client() as client:
-        with app.app_context():
-            init_db()
-        yield client
-
+def app():
+    """Create and configure a Flask app for testing."""
+    # Create a temporary file to isolate the database for each test
+    db_fd, db_path = tempfile.mkstemp()
+    
+    app = create_app('testing')
+    app.config.update({
+        'DATABASE': db_path,
+        'TESTING': True,
+        'WTF_CSRF_ENABLED': False,
+    })
+    
+    # Create the database and load test data
+    with app.app_context():
+        init_db()
+    
+    yield app
+    
+    # Close and remove the temporary database
     os.close(db_fd)
-    os.unlink(app.config['DATABASE'])
+    os.unlink(db_path)
 
 
 @pytest.fixture
-def auth(client):
-    """Helper fixture to log in and log out."""
-    return AuthActions(client)
+def client(app):
+    """A test client for the app."""
+    return app.test_client()
+
+
+@pytest.fixture
+def runner(app):
+    """A test CLI runner for the app."""
+    return app.test_cli_runner()
 
 
 class AuthActions:
@@ -41,3 +54,9 @@ class AuthActions:
 
     def logout(self):
         return self.client.get('/logout', follow_redirects=True)
+
+
+@pytest.fixture
+def auth(client):
+    """Helper fixture to log in and log out."""
+    return AuthActions(client)
