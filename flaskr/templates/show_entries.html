@@ -1,12 +1,12 @@
 {% extends "layout.html" %}
 {% block body %}
   {% if session.logged_in %}
-    <form action="{{ url_for('add_entry') }}" method=post class=add-entry>
+    <form action="{{ url_for('flaskr.add_entry') }}" method=post class=add-entry>
       <dl>
         <dt>Title:
-        <dd><input type=text size=30 name=title>
+        <dd><input type=text size=30 name=title required>
         <dt>Text:
-        <dd><textarea name=text rows=5 cols=40></textarea>
+        <dd><textarea name=text rows=5 cols=40 required></textarea>
         <dd><input type=submit value=Share>
       </dl>
     </form>
@@ -16,7 +16,7 @@
     <li>
       <h2>{{ entry.title }}</h2>{{ entry.text|safe }}
       {% if session.logged_in %}
-        <form action="{{ url_for('delete_entry', entry_id=entry.id) }}" method=post class=delete-entry>
+        <form action="{{ url_for('flaskr.delete_entry', entry_id=entry.id) }}" method=post class=delete-entry>
           <input type=submit value="Delete" onclick="return confirm('Are you sure you want to delete this entry?');">
         </form>
       {% endif %}

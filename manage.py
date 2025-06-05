@@ -6,7 +6,7 @@ Typical usage:
 manage.py run
 
 or to initialize the database:
-manage.py init_db
+manage.py init-db
 
 Make IDE debugging easier.
 """
@@ -16,5 +16,5 @@ import os
 
 if __name__ == '__main__':
     os.environ['FLASK_APP'] = 'flaskr'
-    os.environ['FLASK_DEBUG'] = 'true'
+    os.environ['FLASK_ENV'] = 'development'
     main()

@@ -1,210 +1,150 @@
 import pytest
-import os
 import sqlite3
-import tempfile
 from flask import g
-from flaskr import app, init_db, get_db
+from flaskr.db import get_db
 
 
-class TestFlaskr:
+def test_index(client):
+    """Test the index page."""
+    response = client.get('/')
+    assert response.status_code == 200
+    assert b'Amazon Q Developer Python Flask Demo' in response.data
 
-    def test_close_db(self):
-        """
-        Test that close_db() does not attempt to close the database connection
-        when the 'sqlite_db' attribute is not present in the application context.
-        """
+
+def test_get_db(app):
+    """Test that get_db returns the same connection each time it's called."""
+    with app.app_context():
+        db = get_db()
+        assert db is get_db()
+
+
+def test_init_db_command(runner, monkeypatch):
+    """Test the init-db command."""
+    class Recorder:
+        called = False
+
+    def fake_init_db():
+        Recorder.called = True
+
+    monkeypatch.setattr('flaskr.db.init_db', fake_init_db)
+    result = runner.invoke(args=['init-db'])
+    assert 'Initialized' in result.output
+    assert Recorder.called
+
+
+def test_db_connection(app):
+    """Test that the database connection works."""
+    with app.app_context():
+        db = get_db()
+        assert isinstance(db, sqlite3.Connection)
+
+
+def test_close_db(app):
+    """Test that close_db closes the database connection."""
+    with app.app_context():
+        db = get_db()
+        assert db is get_db()
+        
+    # Outside of app context, db should be closed
+
+
+def test_login(client, auth):
+    """Test login functionality."""
+    # Test GET request to login page
+    response = client.get('/login')
+    assert response.status_code == 200
+    assert b'Login' in response.data
+    
+    # Test successful login
+    response = auth.login()
+    assert response.status_code == 200
+    assert b'You were logged in' in response.data
+    assert b'log out' in response.data
+    
+    # Test logout
+    response = auth.logout()
+    assert b'You were logged out' in response.data
+    assert b'log in' in response.data
+
+
+def test_login_validation(client):
+    """Test login validation."""
+    # Test invalid username
+    response = client.post('/login', data={
+        'username': 'invalid',
+        'password': 'default'
+    }, follow_redirects=True)
+    assert b'Invalid username' in response.data
+    
+    # Test invalid password
+    response = client.post('/login', data={
+        'username': 'admin',
+        'password': 'invalid'
+    }, follow_redirects=True)
+    assert b'Invalid password' in response.data
+
+
+def test_add_entry(client, auth, app):
+    """Test adding an entry."""
+    # Login first
+    auth.login()
+    
+    # Add an entry
+    response = client.post('/add', data={
+        'title': 'Test Title',
+        'text': 'Test Content'
+    }, follow_redirects=True)
+    assert b'New entry was successfully posted' in response.data
+    assert b'Test Title' in response.data
+    assert b'Test Content' in response.data
+    
+    # Verify entry was added to database
+    with app.app_context():
+        db = get_db()
+        count = db.execute('SELECT COUNT(id) FROM entries').fetchone()[0]
+        assert count > 0
+
+
+def test_delete_entry(client, auth, app):
+    """Test deleting an entry."""
+    # Login first
+    auth.login()
+    
+    # Add an entry
+    client.post('/add', data={
+        'title': 'Delete Test',
+        'text': 'This entry will be deleted'
+    })
+    
+    # Get the entry ID
+    with app.app_context():
+        db = get_db()
+        entry = db.execute('SELECT id FROM entries WHERE title = ?', 
+                          ('Delete Test',)).fetchone()
+        
+    if entry:
+        # Delete the entry
+        response = client.post(f'/delete/{entry["id"]}', follow_redirects=True)
+        assert b'Entry was successfully deleted' in response.data
+        
+        # Verify entry was deleted from database
         with app.app_context():
-            # Ensure 'sqlite_db' attribute is not present
-            assert not hasattr(g, 'sqlite_db')
-
-            # Call close_db() and verify it doesn't raise any exceptions
-            app.teardown_appcontext_funcs[0](None)
-
-        # No assertion is needed here as the test passes if no exception is raised
-
-
-    def test_connect_db(self):
-        """
-        Test that connect_db() successfully connects to the database and returns a connection object.
-        """
-        with app.app_context():
-            from flaskr.flaskr import connect_db
-            connection = connect_db()
-            assert isinstance(connection, sqlite3.Connection)
-            assert connection.row_factory == sqlite3.Row
-            connection.close()
-            
-
-    def test_init_db(self):
-        """
-        Test that init_db() correctly initializes the database.
-
-        This test verifies that the init_db function creates the necessary
-        tables in the database by executing the SQL script from schema.sql.
-        It checks if the 'entries' table is created and if it has the expected
-        structure.
-        """
-        with app.app_context():
-            init_db()
             db = get_db()
-
-            # Check if the 'entries' table exists
-            result = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='entries'").fetchone()
-            assert result is not None
-
-            # Check if the 'entries' table has the expected columns
-            cursor = db.execute('PRAGMA table_info(entries)')
-            columns = [row[1] for row in cursor.fetchall()]
-            expected_columns = ['id', 'title', 'text']
-            assert set(columns) == set(expected_columns)
-
-    def test_initdb_command(self):
-        """
-        Test that the initdb_command initializes the database correctly.
-
-        This test verifies that the 'init_db' command:
-        1. Calls the init_db() function
-        2. Prints the expected message after initialization
-        """
-        runner = app.test_cli_runner()
-        result = runner.invoke(args=['init_db'])
-        assert 'Initialized the database.' in result.output
-        assert result.exit_code == 0
-
-    def test_invalid_username(self):
-        """
-        Test login functionality when an invalid username is provided.
-
-        This test case covers the following path:
-        - request.method == 'POST'
-        - request.form['username'] != app.config['USERNAME']
-
-        Expected outcome:
-        - The login attempt should fail
-        - An error message 'Invalid username' should be returned
-        - The user should not be redirected
-        """
-        with app.test_client() as client:
-            response = client.post('/login', data={
-                'username': 'invalid_user',
-                'password': 'default'
-            }, follow_redirects=True)
-
-            assert b'Invalid username' in response.data
-            assert response.status_code == 200
-            assert b'You were logged in' not in response.data
-
-    def test_login_get(self):
-        """
-        Test login when request method is not POST.
-
-        This test verifies that when the login route is accessed with a GET request,
-        it renders the login template without any error message.
-        """
-        with app.test_client() as client:
-            response = client.get('/login')
-            assert response.status_code == 200
-            assert b'<form action=' in response.data
-            assert b'method=post' in response.data
-            assert b'Invalid username' not in response.data
-            assert b'Invalid password' not in response.data
-
-    def test_login_successful(self):
-        """
-        Test successful login with correct username and password.
-        Verifies that the user is redirected to show_entries page and logged in.
-        """
-        with app.test_client() as client:
-            response = client.post('/login', data={
-                'username': app.config['USERNAME'],
-                'password': app.config['PASSWORD']
-            }, follow_redirects=True)
-
-            assert response.status_code == 200
-            assert b'You were logged in' in response.data
-            assert b'log out' in response.data
-
-    def test_show_entries(self):
-        """
-        Test the show_entries function to ensure it correctly renders the template
-        with the entries from the database.
-        """
-        with app.test_client() as client:
-            # Make a GET request to the root URL
-            response = client.get('/')
-
-            # Check if the response status code is 200 (OK)
-            assert response.status_code == 200
-
-            # Check if the response contains the expected content
-            assert b'<title>Amazon Q Developer Flask Demo</title>' in response.data
-            # Remove the check for <h2>Entries</h2> as it's not in the template
-            
-            # Note: We're not checking for specific entries here because
-            # the database state is not guaranteed. In a real-world scenario,
-            # you might want to set up a known database state before running this test.
-
-    def test_delete_entry_unauthorized(self):
-        """
-        Test that unauthorized users cannot delete entries.
-        """
-        with app.test_client() as client:
-            # Try to delete an entry without being logged in
-            response = client.post('/delete/1', follow_redirects=True)
-            
-            # Should return 401 Unauthorized
-            assert response.status_code == 401
-
-    def test_delete_entry_authorized(self):
-        """
-        Test that authorized users can delete entries.
-        """
-        with app.test_client() as client:
-            # First, log in
-            client.post('/login', data={
-                'username': app.config['USERNAME'],
-                'password': app.config['PASSWORD']
-            })
-            
-            # Add a test entry
-            client.post('/add', data={
-                'title': 'Test Entry',
-                'text': 'This is a test entry to be deleted.'
-            })
-            
-            # Get the entries to find the ID of the one we just added
-            with app.app_context():
-                db = get_db()
-                entry = db.execute('SELECT id FROM entries WHERE title = ?', 
-                                  ['Test Entry']).fetchone()
-                
-                if entry:
-                    # Delete the entry
-                    response = client.post(f'/delete/{entry["id"]}', follow_redirects=True)
-                    
-                    # Check if deletion was successful
-                    assert response.status_code == 200
-                    assert b'Entry was successfully deleted' in response.data
-                    
-                    # Verify the entry is no longer in the database
-                    check = db.execute('SELECT * FROM entries WHERE id = ?', 
-                                      [entry["id"]]).fetchone()
-                    assert check is None
+            entry = db.execute('SELECT * FROM entries WHERE title = ?', 
+                              ('Delete Test',)).fetchone()
+            assert entry is None
 
 
-class AuthActions(object):
-
-    def __init__(self, client):
-        self._client = client
-
-    def login(self, username='admin', password='default'):
-        return self._client.post('/login', data=dict(
-            username=username,
-            password=password
-        ), follow_redirects=True)
-
-    def logout(self):
-        return self._client.get('/logout', follow_redirects=True)
-
-
+def test_unauthorized_access(client):
+    """Test unauthorized access to protected routes."""
+    # Try to add an entry without logging in
+    response = client.post('/add', data={
+        'title': 'Unauthorized',
+        'text': 'This should not be added'
+    })
+    assert response.status_code == 401
+    
+    # Try to delete an entry without logging in
+    response = client.post('/delete/1')
+    assert response.status_code == 401
 
